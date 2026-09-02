@@ -1,0 +1,31 @@
+{
+  "name": "@presentation-viewer/core",
+  "version": "0.0.1",
+  "description": "Core PPTX parser and serializer",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "jszip": "^3.10.1",
+    "fast-xml-parser": "^4.4.0"
+  },
+  "devDependencies": {
+    "@presentation-viewer/common.typescript": "workspace:*",
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0"
+  }
+}

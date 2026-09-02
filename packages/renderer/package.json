@@ -1,0 +1,33 @@
+{
+  "name": "@presentation-viewer/renderer",
+  "version": "0.0.1",
+  "description": "Canvas/SVG renderer for presentation slides",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@presentation-viewer/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@presentation-viewer/common.typescript": "workspace:*",
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

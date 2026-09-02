@@ -1,0 +1,14 @@
+{
+  "name": "@presentation-viewer/common.typescript",
+  "version": "0.0.1",
+  "description": "Shared TypeScript configuration",
+  "main": "index.js",
+  "files": [
+    "base.json",
+    "react.json",
+    "node.json"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
