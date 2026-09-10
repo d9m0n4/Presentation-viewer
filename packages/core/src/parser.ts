@@ -37,8 +37,18 @@ type Transform = {
   flipV: boolean;
 };
 
+type FontScheme = {
+  majorLatin?: string;
+  minorLatin?: string;
+  majorEa?: string;
+  minorEa?: string;
+  majorCs?: string;
+  minorCs?: string;
+};
+
 type ColorContext = {
   theme: Record<string, string>;
+  fontScheme?: FontScheme;
   placeholderColor?: string;
 };
 
@@ -105,6 +115,7 @@ type ParseContext = {
   relationships: Map<string, Relationship>;
   zip: JSZip;
   parentTransform?: GroupTransform;
+  layoutPlaceholders?: Map<string, Transform>;
 };
 
 type GroupTransform = {
@@ -291,6 +302,73 @@ export class PPTXParser {
     return slides;
   }
 
+  private async getLayoutPlaceholders(
+    slidePath: string,
+    slideRels: Map<string, Relationship>,
+  ): Promise<Map<string, Transform>> {
+    const layoutRel = [...slideRels.values()].find((r) =>
+      r.type.endsWith("/slideLayout"),
+    );
+    if (!layoutRel) return new Map();
+
+    const layoutPath = this.resolvePath(slidePath, layoutRel.target);
+    const layoutFile = this.zip.file(layoutPath);
+    if (!layoutFile) return new Map();
+
+    const layoutRoot = this.orderedParser.parse(
+      await layoutFile.async("string"),
+    );
+    const map = this.extractPlaceholderTransforms(layoutRoot, "p:sldLayout");
+
+    // если и в layout нет xfrm — добираем из slideMaster
+    const layoutRels = await this.parseRelationships(
+      this.relationshipsPath(layoutPath),
+    );
+    const masterRel = [...layoutRels.values()].find((r) =>
+      r.type.endsWith("/slideMaster"),
+    );
+    if (masterRel) {
+      const masterPath = this.resolvePath(layoutPath, masterRel.target);
+      const masterFile = this.zip.file(masterPath);
+      if (masterFile) {
+        const masterRoot = this.orderedParser.parse(
+          await masterFile.async("string"),
+        );
+        const masterMap = this.extractPlaceholderTransforms(
+          masterRoot,
+          "p:sldMaster",
+        );
+        for (const [k, v] of masterMap) if (!map.has(k)) map.set(k, v);
+      }
+    }
+    return map;
+  }
+
+  private extractPlaceholderTransforms(
+    root: XmlNode,
+    containerTag: string,
+  ): Map<string, Transform> {
+    const map = new Map<string, Transform>();
+    const container = this.findChild(root, containerTag);
+    const spTree =
+      container &&
+      this.findChild(this.findChild(container, "p:cSld")!, "p:spTree");
+    if (!spTree) return map;
+
+    for (const sp of this.elementChildren(spTree)) {
+      if (this.elementName(sp) !== "p:sp") continue;
+      const ph = this.parsePlaceholder(this.findChild(sp, "p:nvSpPr"));
+      const spPr = this.findChild(sp, "p:spPr");
+      if (!ph || !spPr) continue;
+      const t = this.parseTransform(spPr);
+      if (t.width && t.height) {
+        map.set(`${ph.type ?? ""}:${ph.index ?? ""}`, t);
+        map.set(`${ph.type ?? ""}:`, t);
+      }
+    }
+    return map;
+  }
+
   private async parseSlide(
     slidePath: string,
     index: number,
@@ -320,14 +398,21 @@ export class PPTXParser {
 
     const relationships = await this.parseRelationships(relPath);
 
+    const layoutPlaceholders = await this.getLayoutPlaceholders(
+      slidePath,
+      relationships,
+    );
+
     const colorContext: ColorContext = {
       theme: this.theme,
+      fontScheme: this.fontScheme,
     };
 
     const context: ParseContext = {
       colorContext,
       relationships,
       zip: this.zip,
+      layoutPlaceholders,
     };
 
     const cSld = this.findChild(slideNode, "p:cSld");
@@ -384,7 +469,6 @@ export class PPTXParser {
       id: this.slideIdFromPath(slidePath, index),
       shapes,
       background,
-
       width: slideWidth,
       height: slideHeight,
     } as Slide;
@@ -444,98 +528,68 @@ export class PPTXParser {
   private parseShape(node: XmlNode, context: ParseContext): ParsedShape | null {
     const nvSpPr = this.findChild(node, "p:nvSpPr");
     const cNvPr = nvSpPr ? this.findChild(nvSpPr, "p:cNvPr") : undefined;
+    const placeholder = this.parsePlaceholder(nvSpPr);
 
     const spPr = this.findChild(node, "p:spPr");
 
-    if (!spPr) {
-      /*
-       * Placeholder shape может не иметь spPr.
-       */
-      const text = this.parseTextBody(
-        this.findChild(node, "p:txBody"),
-        context,
-      );
-
-      if (!text) return null;
-
-      return {
-        id: this.attr(cNvPr, "id") || "unknown",
-        name: this.attr(cNvPr, "name"),
-        type: "text",
-        position: { x: 0, y: 0 },
-        size: { width: 0, height: 0 },
-        text,
-      };
-    }
-
-    const transform = this.parseTransform(spPr);
-
-    const geometry = this.findChild(spPr, "a:prstGeom");
-
-    const preset = geometry ? this.attr(geometry, "prst") : undefined;
-
-    const fill = this.parseFill(spPr, node, context);
-
-    const stroke = this.parseStroke(spPr, node, context);
-
     const txBody = this.findChild(node, "p:txBody");
-
     const text = this.parseTextBody(txBody, context);
 
-    const placeholder = this.parsePlaceholder(nvSpPr);
+    let transform: Transform = spPr
+      ? this.parseTransform(spPr)
+      : {
+          x: 0,
+          y: 0,
+          width: 0,
+          height: 0,
+          rotation: 0,
+          flipH: false,
+          flipV: false,
+        };
 
-    /*
-     * Вот ключевой момент:
-     *
-     * shape с text + rect остаётся RECTANGLE.
-     *
-     * Мы больше не делаем:
-     *
-     * if (text) => text
-     */
+    if ((!transform.width || !transform.height) && placeholder) {
+      const key = `${placeholder.type ?? ""}:${placeholder.index ?? ""}`;
+      const fallback =
+        context.layoutPlaceholders?.get(key) ??
+        context.layoutPlaceholders?.get(`${placeholder.type ?? ""}:`);
+      if (fallback) transform = fallback;
+    }
+
+    if (!transform.width && !transform.height && !text) {
+      // совсем нечего рендерить
+      return null;
+    }
+
+    const geometry = spPr ? this.findChild(spPr, "a:prstGeom") : undefined;
+    const preset = geometry ? this.attr(geometry, "prst") : undefined;
+
+    const fill = spPr ? this.parseFill(spPr, node, context) : undefined;
+    const stroke = spPr ? this.parseStroke(spPr, node, context) : undefined;
+
     let type = this.mapPresetGeometry(preset);
 
     if (!type) {
-      if (text) {
-        type = "text";
-      } else {
-        type = "shape";
-      }
+      type = text ? "text" : "shape";
     }
 
     const shape: ParsedShape = {
       id: this.attr(cNvPr, "id") || "unknown",
       name: this.attr(cNvPr, "name"),
-
       type,
-
-      position: {
-        x: this.emuToPx(transform.x),
-        y: this.emuToPx(transform.y),
-      },
-
+      position: { x: this.emuToPx(transform.x), y: this.emuToPx(transform.y) },
       size: {
         width: this.emuToPx(transform.width),
         height: this.emuToPx(transform.height),
       },
-
       rotation: transform.rotation || undefined,
       flipH: transform.flipH || undefined,
       flipV: transform.flipV || undefined,
-
       fill,
       stroke,
       text,
-
-      geometry: {
-        preset,
-      },
-
+      geometry: { preset },
       placeholder,
-
-      raw: {
-        presetGeometry: preset,
-      },
+      raw: { presetGeometry: preset },
     };
 
     return this.applyParentTransform(shape, context.parentTransform);
@@ -1398,12 +1452,34 @@ export class PPTXParser {
     };
   }
 
+  private resolveFontFamily(
+    typeface: string | undefined,
+    fontScheme?: FontScheme,
+  ): string | undefined {
+    if (!typeface) return undefined;
+
+    switch (typeface) {
+      case "+mn-lt":
+        return fontScheme?.minorLatin;
+      case "+mj-lt":
+        return fontScheme?.majorLatin;
+      case "+mn-ea":
+        return fontScheme?.minorEa;
+      case "+mj-ea":
+        return fontScheme?.majorEa;
+      case "+mn-cs":
+        return fontScheme?.minorCs;
+      case "+mj-cs":
+        return fontScheme?.majorCs;
+      default:
+        return typeface;
+    }
+  }
+
   private parseTextRun(node: XmlNode, context: ParseContext): TextRun | null {
     const rPr =
       this.findChild(node, "a:rPr") || this.findChild(node, "a:defRPr");
-
     const t = this.findChild(node, "a:t");
-
     const text = t ? this.textContent(t) : "";
 
     if (!text) {
@@ -1417,35 +1493,27 @@ export class PPTXParser {
       : undefined;
 
     const latin = rPr ? this.findChild(rPr, "a:latin") : undefined;
-
-    const fontFamily = latin ? this.attr(latin, "typeface") : undefined;
-
+    const rawFontFamily = latin ? this.attr(latin, "typeface") : undefined;
+    const fontFamily = this.resolveFontFamily(
+      rawFontFamily,
+      context.colorContext.fontScheme,
+    );
     const size = this.number(this.attr(rPr, "sz"));
 
     return {
       text,
-
       fontFamily: fontFamily || undefined,
-
-      /*
-       * Text size is 1/100 pt.
-       */
       fontSize: size > 0 ? size / 100 : undefined,
-
       bold: this.attr(rPr, "b") === "1" ? true : undefined,
-
       italic: this.attr(rPr, "i") === "1" ? true : undefined,
-
       underline:
         this.attr(rPr, "u") && this.attr(rPr, "u") !== "none"
           ? true
           : undefined,
-
       strike:
         this.attr(rPr, "strike") && this.attr(rPr, "strike") !== "noStrike"
           ? true
           : undefined,
-
       color: color?.color,
       opacity: color?.opacity,
     };
@@ -1538,6 +1606,8 @@ export class PPTXParser {
   // THEME
   // ---------------------------------------------------------------------------
 
+  private fontScheme: FontScheme = {};
+
   private async parseTheme(): Promise<void> {
     const themeFile = this.zip.file("ppt/theme/theme1.xml");
 
@@ -1559,6 +1629,39 @@ export class PPTXParser {
     const clrScheme = themeElements
       ? this.findChild(themeElements, "a:clrScheme")
       : undefined;
+
+    const fontScheme = themeElements
+      ? this.findChild(themeElements, "a:fontScheme")
+      : undefined;
+    const majorFont = fontScheme
+      ? this.findChild(fontScheme, "a:majorFont")
+      : undefined;
+    const minorFont = fontScheme
+      ? this.findChild(fontScheme, "a:minorFont")
+      : undefined;
+
+    const readLatin = (fontNode?: XmlNode) => {
+      const latin = fontNode ? this.findChild(fontNode, "a:latin") : undefined;
+      return latin ? this.attr(latin, "typeface") : undefined;
+    };
+
+    const readEa = (fontNode?: XmlNode) => {
+      const ea = fontNode ? this.findChild(fontNode, "a:ea") : undefined;
+      return ea ? this.attr(ea, "typeface") : undefined;
+    };
+    const readCs = (fontNode?: XmlNode) => {
+      const cs = fontNode ? this.findChild(fontNode, "a:cs") : undefined;
+      return cs ? this.attr(cs, "typeface") : undefined;
+    };
+
+    this.fontScheme = {
+      majorLatin: readLatin(majorFont) || "Calibri Light",
+      minorLatin: readLatin(minorFont) || "Calibri",
+      majorEa: readEa(majorFont),
+      minorEa: readEa(minorFont),
+      majorCs: readCs(majorFont),
+      minorCs: readCs(minorFont),
+    };
 
     const result: Record<string, string> = {};
 

@@ -1,6 +1,6 @@
-import { useEffect, useRef } from 'react';
-import { SlideRenderer } from '@presentation-viewer/renderer';
-import type { Slide } from '@presentation-viewer/core';
+import { useEffect, useRef } from "react";
+import { SlideRenderer } from "@presentation-viewer/renderer";
+import type { Slide } from "@presentation-viewer/core";
 
 interface SlideCanvasProps {
   slide: Slide;
@@ -9,7 +9,12 @@ interface SlideCanvasProps {
   debug?: boolean;
 }
 
-export function SlideCanvas({ slide, width = 960, height = 720, debug = true }: SlideCanvasProps) {
+export function SlideCanvas({
+  slide,
+  width = 960,
+  height = 720,
+  debug = false,
+}: SlideCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
@@ -19,7 +24,7 @@ export function SlideCanvas({ slide, width = 960, height = 720, debug = true }: 
     renderer.render(slide, {
       width,
       height,
-      backgroundColor: '#ffffff',
+      backgroundColor: "#ffffff",
       debug,
     });
 
@@ -32,10 +37,10 @@ export function SlideCanvas({ slide, width = 960, height = 720, debug = true }: 
     <canvas
       ref={canvasRef}
       style={{
-        width: '100%',
-        height: 'auto',
-        border: '1px solid #e0e0e0',
-        borderRadius: '8px',
+        width: "100%",
+        height: "auto",
+        border: "1px solid #e0e0e0",
+        borderRadius: "8px",
       }}
     />
   );
