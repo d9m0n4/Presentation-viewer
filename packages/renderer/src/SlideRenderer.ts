@@ -269,21 +269,33 @@ export class SlideRenderer {
     );
 
     const path = new Path2D();
-
     path.rect(0, 0, width, height);
 
     this.renderFill(shape.fill, path);
-
     this.renderStroke(shape.stroke, path);
 
     this.ctx.restore();
+
+    if (shape.text) {
+      this.renderShapeText(shape, debug);
+    }
 
     if (debug) {
       this.renderDebugBox(x, y, width, height, "#ff0000");
     }
   }
 
-  private renderShapeText(shape: GeometryShape, debug: boolean): void {
+  private renderShapeText(
+    shape: {
+      text?: TextShape["text"];
+      position: { x: number; y: number };
+      size: { width: number; height: number };
+      rotation?: number;
+      flipH?: boolean;
+      flipV?: boolean;
+    },
+    debug: boolean,
+  ): void {
     if (!shape.text) {
       return;
     }
